@@ -15,9 +15,8 @@ from io import BytesIO
 from xhtml2pdf import pisa
 from django.template import Context, Template
 from django.core.files.base import ContentFile
-from .models import Account, Attendance, Budget, ChatMessage, ChatRoom, MessageReadStatus, Notification, BudgetItem, Client, CompetentAuthority, GeneratedReport, JournalEntry, LeaveRequest, CustomUser, Department, Document, DocumentType, Invoice, InvoiceItem, LandBoundary, PermissionRequest, Project, ReportTemplate, Role, Permission, Task, Transaction, TransactionDistribution, TransactionDocument, TransactionMainCategory, TransactionSubCategory, UserPresence
-from .serializers import AccountSerializer, AttendanceSerializer, BudgetItemSerializer, BudgetSerializer, ChatMessageSerializer, ChatRoomSerializer, ChatUserSerializer, ClientSerializer, CompetentAuthoritySerializer, CreateChatRoomSerializer, DepartmentSerializer, DocumentSerializer, GeneratedReportSerializer, InvoiceSerializer, JournalEntrySerializer, LeaveRequestSerializer, NotificationSerializer, PermissionRequestSerializer, ProjectSerializer, ReportTemplateSerializer, StaffSerializer, TaskSerializer, TransactionDistributionSerializer, TransactionDocumentSerializer, TransactionMainCategorySerializer, TransactionSerializer, TransactionSubCategorySerializer, UserSerializer, RoleSerializer, PermissionSerializer, MyTokenObtainPairSerializer
-from rest_framework_simplejwt.views import TokenObtainPairView
+from .models import *
+from .serializers import *
 from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
@@ -25,6 +24,8 @@ from asgiref.sync import async_to_sync # <-- إضافة استيراد جديد
 from channels.layers import get_channel_layer
 from django.db.models import Sum, Case, When, Value, DecimalField
 from .services import create_and_send_notification # استيراد الدالة الجديدة
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 
 
@@ -55,51 +56,62 @@ class PermissionViewSet(viewsets.ModelViewSet):
 
 class TransactionViewSet(viewsets.ModelViewSet):
     """
-    API endpoint that allows transactions to be viewed or edited.
+    API endpoint that allows transactions to be viewed or edited,
+    with permission-based filtering and custom actions.
     """
     serializer_class = TransactionSerializer
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    # --- فلاتر البحث والترتيب ---
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
+    filterset_fields = ['client', 'status', 'assigned_to', 'main_category']
+    search_fields = ['short_code', 'title', 'client__name_ar']
+    ordering_fields = ['created_at', 'updated_at']
 
     def get_queryset(self):
+        """
+        يقوم بإرجاع قائمة المعاملات مع تطبيق الصلاحيات والفلاتر وتحسينات الأداء.
+        """
         user = self.request.user
-        queryset = Transaction.objects.all().order_by('-created_at')
+        
+        # 1. نبدأ بالـ QuerySet الأساسي مع تحسينات الأداء
+        queryset = Transaction.objects.all().select_related(
+            'client', 'assigned_to', 'main_category', 'sub_category'
+        ).prefetch_related(
+            'distributions', 'required_documents'
+        ).order_by('-created_at')
 
-        # --- فلترة حسب الصلاحيات ---
-        if user.is_superuser or (user.role and user.role.permissions.filter(code='PERM039').exists()):
-            pass  # يرى جميع المعاملات
-        elif user.role and user.role.permissions.filter(code='PERM040').exists():
+        # 2. نطبق فلترة الصلاحيات
+        if not (user.is_superuser or (user.role and user.role.permissions.filter(code='PERM039').exists())):
+            # إذا لم يكن المستخدم مشرفًا أو لديه صلاحية عرض الكل،
+            # فإنه يرى فقط المعاملات المسندة إليه
             queryset = queryset.filter(assigned_to=user)
-        else:
-            return Transaction.objects.none()
-
-        # --- فلترة بالحالة (status) إذا تم تمريرها في الرابط ---
-        status_param = self.request.query_params.get('status')
-        if status_param:
-            queryset = queryset.filter(status=status_param)
+        
+        # 3. نطبق فلتر "المعاملات النشطة" (is_active)
+        is_active_param = self.request.query_params.get('is_active')
+        if is_active_param in ['true', 'True', '1']:
+            queryset = queryset.exclude(status__in=['completed', 'cancelled'])
 
         return queryset
 
-
     def perform_create(self, serializer):
         """
-        Custom logic to create a transaction and its associated required documents checklist.
+        إنشاء معاملة جديدة وتوليد قائمة المستندات المطلوبة لها تلقائيًا.
         """
         transaction = serializer.save()
-
-        # --- هذا هو الكود الجديد ---
-        # تحديد قائمة المستندات المطلوبة بناءً على نوع المعاملة
-        # (في المستقبل، يمكن جلب هذه القائمة من قاعدة البيانات)
+        
         required_docs_codes = []
         sub_category_code = transaction.sub_category.code if transaction.sub_category else None
 
-        if sub_category_code == 'BUILD-LIC': # إذا كانت رخصة بناء جديدة
+        if sub_category_code == 'BUILD-LIC': # رخصة بناء جديدة
             required_docs_codes = [
                 "DOC001", "DOC002", "DOC003", "DOC004", "DOC005", "DOC006", 
                 "DOC007", "DOC008", "DOC009", "DOC010", "DOC011", "DOC012",
                 "DOC013", "DOC014", "DOC015", "DOC016", "DOC017", "DOC018",
                 "DOC019", "DOC020", "DOC021", "DOC022"
             ]
-        else: # قائمة افتراضية للأنواع الأخرى
+        else: # قائمة افتراضية
             required_docs_codes = ["DOC001", "DOC005"]
 
         for code in required_docs_codes:
@@ -111,22 +123,22 @@ class TransactionViewSet(viewsets.ModelViewSet):
                 )
             except DocumentType.DoesNotExist:
                 print(f"Warning: DocumentType with code {code} not found.")
-    
+
     def perform_update(self, serializer):
-        # ... (الكود يبقى كما هو)
         boundaries_data = serializer.validated_data.pop('boundaries', None)
         transaction = serializer.save()
         if boundaries_data:
             LandBoundary.objects.update_or_create(transaction=transaction, defaults=boundaries_data)
 
-    @action(detail=False, methods=['get'])
-    def my_transactions(self, request):
+    # --- الإجراءات المخصصة لتغيير حالة المعاملة ---
+    # === START: إعادة إضافة الإجراء المخصص الذي تم حذفه ===
+    @action(detail=False, methods=['get'], url_path='my-work')
+    def my_work(self, request):
         """
-        Returns a list of transactions assigned to the currently authenticated user.
+        إرجاع قائمة بالمعاملات المسندة إلى المستخدم الحالي.
+        هذا الإجراء يطبق نفس منطق الفلترة الموجود في get_queryset الرئيسي.
         """
-        user = request.user
-        # الكود الأصلي كان يستخدم get_queryset()، ولكن الفلترة المباشرة هنا أفضل وأوضح
-        queryset = Transaction.objects.filter(assigned_to=user).order_by('-created_at')
+        queryset = self.get_queryset() # يعيد استخدام منطق الفلترة بالصلاحيات
         
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -135,17 +147,15 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
-    
-    # في views.py، داخل كلاس TransactionViewSet
+    # === END: الإضافة هنا ===
 
-    # === START: أضف هذه الدوال الجديدة ===
     def _check_permission(self, user, transaction):
-        """Helper function to check if a user is the assigned user."""
+        """دالة مساعدة للتحقق مما إذا كان المستخدم هو المسند إليه المعاملة."""
         return user.is_superuser or transaction.assigned_to == user
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], url_path='start-processing')
     def start_processing(self, request, pk=None):
-        """Changes the transaction status from 'under_review' to 'processing'."""
+        """تغيير حالة المعاملة إلى 'تحت المعالجة'."""
         transaction = self.get_object()
         if not self._check_permission(request.user, transaction):
             return Response({'detail': 'Action forbidden.'}, status=status.HTTP_403_FORBIDDEN)
@@ -153,13 +163,12 @@ class TransactionViewSet(viewsets.ModelViewSet):
         if transaction.status == 'under_review':
             transaction.status = 'processing'
             transaction.save()
-            # يمكنك إضافة إشعار للمدير هنا
             return Response({'status': 'Transaction processing started'})
-        return Response({'detail': 'Invalid current status.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'detail': 'Invalid current status for this action.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], url_path='request-documents')
     def request_documents(self, request, pk=None):
-        """Changes the transaction status to 'docs_required'."""
+        """تغيير حالة المعاملة إلى 'مطلوب مستندات'."""
         transaction = self.get_object()
         if not self._check_permission(request.user, transaction):
             return Response({'detail': 'Action forbidden.'}, status=status.HTTP_403_FORBIDDEN)
@@ -170,18 +179,15 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Changes the transaction status to 'completed'."""
+        """تغيير حالة المعاملة إلى 'منتهي'."""
         transaction = self.get_object()
         if not self._check_permission(request.user, transaction):
             return Response({'detail': 'Action forbidden.'}, status=status.HTTP_403_FORBIDDEN)
         
-        # يمكن إضافة منطق للتحقق من اكتمال كل المتطلبات قبل التغيير
         transaction.status = 'completed'
         transaction.save()
-        # يمكنك إضافة إشعار للمدير هنا
         return Response({'status': 'Transaction marked as completed'})
-    # === END: الإضافة تنتهي هنا ===
-    
+
     
 
 class MyTokenObtainPairView(TokenObtainPairView):

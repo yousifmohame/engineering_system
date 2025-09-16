@@ -4,6 +4,7 @@ from rest_framework import serializers
 from .models import Account, Attendance, Budget, BudgetItem, ChatMessage, ChatRoom, Client, CompetentAuthority, GeneratedReport, JournalEntry, JournalEntryItem, LeaveRequest, CustomUser, Department, Document, DocumentType, Invoice, InvoiceItem, LandBoundary, MessageReadStatus, Notification, Payment, PermissionRequest, Project, ReportTemplate, Role, Permission, Task, Transaction, TransactionDistribution, TransactionDocument, TransactionMainCategory, TransactionSubCategory
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.db import transaction
+from datetime import timedelta
 
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -71,69 +72,100 @@ class DocumentSerializer(serializers.ModelSerializer):
         # إذا لم يتحقق الشرط، أرجع قيمة فارغة بدلاً من التسبب في انهيار الخادم
         return None
 
+# class TransactionDocumentSerializer(serializers.ModelSerializer):
+#     document_type = DocumentTypeSerializer(read_only=True)
+#     # --- [هذا هو التعديل] ---
+#     # سنعرض قائمة الملفات المرتبطة بهذا البند
+#     files = DocumentSerializer(many=True, read_only=True)
+
+#     class Meta:
+#         model = TransactionDocument
+#         fields = ['id', 'document_type', 'status', 'files'] # تم استبدال uploaded_file بـ files
+
+#     def get_uploaded_file_url(self, obj):
+#         # هذه الدالة تتأكد من وجود الملف والرابط قبل محاولة الوصول إليهما
+#         request = self.context.get('request')
+#         if obj.uploaded_file and hasattr(obj.uploaded_file.file, 'url') and request:
+#             return request.build_absolute_uri(obj.uploaded_file.file.url)
+        return None
+
 class TransactionDocumentSerializer(serializers.ModelSerializer):
-    document_type = DocumentTypeSerializer(read_only=True)
-    # --- [هذا هو التعديل] ---
-    # سنعرض قائمة الملفات المرتبطة بهذا البند
-    files = DocumentSerializer(many=True, read_only=True)
+    document_type_name = serializers.CharField(source='document_type.name_ar', read_only=True)
+    files = serializers.SerializerMethodField()
 
     class Meta:
         model = TransactionDocument
-        fields = ['id', 'document_type', 'status', 'files'] # تم استبدال uploaded_file بـ files
+        fields = ['id', 'document_type', 'document_type_name', 'status', 'files']
 
-    def get_uploaded_file_url(self, obj):
-        # هذه الدالة تتأكد من وجود الملف والرابط قبل محاولة الوصول إليهما
-        request = self.context.get('request')
-        if obj.uploaded_file and hasattr(obj.uploaded_file.file, 'url') and request:
-            return request.build_absolute_uri(obj.uploaded_file.file.url)
-        return None
+    def get_files(self, obj):
+        # هنا نفترض أن لديك DocumentSerializer
+        # إذا لم يكن موجودًا، يمكنك إنشاؤه
+        return DocumentSerializer(obj.files.all(), many=True, context=self.context).data
 
 
 class TransactionSerializer(serializers.ModelSerializer):
+    client_name = serializers.CharField(source='client.name_ar', read_only=True, allow_null=True)
     assigned_to_name = serializers.CharField(source='assigned_to.username', read_only=True, allow_null=True)
-    client_name = serializers.CharField(source='client.name_ar', read_only=True)
     main_category_name = serializers.CharField(source='main_category.name', read_only=True, allow_null=True)
     sub_category_name = serializers.CharField(source='sub_category.name', read_only=True, allow_null=True)
-    competent_authority_name = serializers.CharField(source='competent_authority.name', read_only=True, allow_null=True)
-    boundaries = LandBoundarySerializer(required=False, allow_null=True)
     required_documents = TransactionDocumentSerializer(many=True, read_only=True)
-
     
+    # حقول محسوبة لشاشة "المعاملات النشطة"
+    assignment_date = serializers.SerializerMethodField()
+    expected_end_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Transaction
-        fields = [
-            'id', 'short_code', 'long_code', 'client', 'client_name',
-            'status', 'assigned_to', 'assigned_to_name', 'created_at',
-            'updated_at', 'main_category', 'main_category_name', 'sub_category',
-            'sub_category_name', 'competent_authority', 'competent_authority_name',
-            'doc_type', 'doc_classification', 'doc_number', 'doc_date', 'area_sq_meters',
-            'piece_number', 'plan_number', 'neighborhood', 'city',
-            'boundaries', 'required_documents'
-        ]
-        # --- [هذا هو التصحيح] ---
-        # قمنا بإزالة 'status' من قائمة الحقول للقراءة فقط للسماح بتحديثها
-        read_only_fields = [
-            'long_code', 'created_at', 'updated_at', 'client_name', 
-            'main_category_name', 'sub_category_name', 'competent_authority_name',
-            'required_documents' 
-        ]
+        fields = '__all__' # استخدام __all__ أفضل طالما أنك تريد كل الحقول
+        read_only_fields = ('short_code', 'long_code')
+        extra_kwargs = {
+            'doc_type': {'required': False, 'allow_null': True},
+            'doc_classification': {'required': False, 'allow_null': True},
+            'doc_number': {'required': False, 'allow_null': True},
+            'doc_date': {'required': False, 'allow_null': True},
+            'area_sq_meters': {'required': False, 'allow_null': True},
+            'piece_number': {'required': False, 'allow_null': True},
+            'plan_number': {'required': False, 'allow_null': True},
+            'neighborhood': {'required': False, 'allow_null': True},
+            'city': {'required': False, 'allow_null': True},
+            'description': {'required': False, 'allow_null': True},
+            'location': {'required': False, 'allow_null': True},
+            'expected_start_date': {'required': False, 'allow_null': True},
+            'expected_duration': {'required': False, 'allow_null': True},
+            'assigned_to': {'required': False, 'allow_null': True},
+            'client': {'required': False, 'allow_null': True},
+            'main_category': {'required': False, 'allow_null': True},
+            'sub_category': {'required': False, 'allow_null': True},
+            'competent_authority': {'required': False, 'allow_null': True},
+        }
+
+    def get_assignment_date(self, obj):
+        last_distribution = obj.distributions.order_by('-assigned_at').first()
+        if last_distribution:
+            return last_distribution.assigned_at
+        return obj.created_at
+
+    def get_expected_end_date(self, obj):
+        if obj.expected_start_date and obj.expected_duration:
+            return obj.expected_start_date + timedelta(days=obj.expected_duration)
+        return None
+
+    # === START: الدالة المصححة التي أضفتها ===
     def update(self, instance, validated_data):
         """
-        Override the update method to automatically update the status
-        to 'assigned' when a user is assigned to a 'new' transaction.
+        يقوم بتغيير حالة المعاملة تلقائيًا إلى "قيد المراجعة"
+        عند إسنادها لأول مرة إلى موظف.
         """
-        # Check if a user is being assigned in this update request
-        if 'assigned_to' in validated_data and validated_data.get('assigned_to') is not None:
-            # Check if the transaction's current status is 'new'
-            if instance.status == 'new':
-                # Automatically set the status to 'assigned'
-                validated_data['status'] = 'assigned'
+        assigned_to_user = validated_data.get('assigned_to')
         
-        # Call the original update method to save the instance
+        # التحقق من أنه تم إسناد موظف وأن الحالة الحالية "جديد"
+        if assigned_to_user and instance.status == 'new':
+            # === التصحيح هنا: تغيير الحالة إلى 'under_review' ===
+            instance.status = 'under_review'
+        
+        # استدعاء دالة التحديث الأصلية لحفظ باقي البيانات
         return super().update(instance, validated_data)
-    # === END: التعديل الاحتياطي هنا ===    
-
+    # === END: الدالة المصححة ===
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod

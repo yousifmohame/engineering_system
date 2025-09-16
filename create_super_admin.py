@@ -38,9 +38,9 @@ def create_super_admin():
 
     # 4. Create a new Super User
     # !!! الرجاء تغيير هذه البيانات قبل تشغيل السكربت !!!
-    username = 'admin'
+    username = 'admin1'
     email = 'admin@example.com'
-    password = 'admin123' # استخدم كلمة مرور قوية
+    password = 'admin1234' # استخدم كلمة مرور قوية
     full_name_ar = 'مدير النظام'
 
     if not CustomUser.objects.filter(username=username).exists():

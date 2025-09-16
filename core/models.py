@@ -110,9 +110,8 @@ class CompetentAuthority(models.Model):
     def __str__(self):
         return self.name
 
-# ===============================================
-# نموذج المعاملات المعدل
-# ===============================================
+
+
 class Transaction(models.Model):
     class StatusChoices(models.TextChoices):
         NEW = 'new', 'جديد'
@@ -124,8 +123,15 @@ class Transaction(models.Model):
         CANCELLED = 'cancelled', 'ملغى'
         SUSPENDED = 'suspended', 'موقوف مؤقتاً'
 
-    # --- الحقول الحالية (مع تعديلات) ---
-    short_code = models.CharField(max_length=10, unique=True)
+    class DisciplineChoices(models.TextChoices):
+        ARCH = 'ARCH', 'معماري'
+        STRU = 'STRU', 'إنشائي'
+        ELEC = 'ELEC', 'كهربائي'
+        MECH = 'MECH', 'ميكانيكي'
+        CIVL = 'CIVL', 'مدني'
+        ENV = 'ENV', 'بيئي'
+
+    short_code = models.CharField(max_length=30, unique=True, editable=False, blank=True, verbose_name="رمز المعاملة")
     long_code = models.CharField(max_length=255, unique=True, blank=True, null=True)
     client = models.ForeignKey(Client, on_delete=models.PROTECT,null=True, blank=True, related_name='transactions')
     status = models.CharField(max_length=20, choices=StatusChoices.choices, default=StatusChoices.NEW)
@@ -133,41 +139,62 @@ class Transaction(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # --- حقول التصنيف الهرمي (جديدة) ---
+    title = models.CharField(max_length=255, verbose_name="عنوان المعاملة")
+    description = models.TextField(blank=True, null=True, verbose_name="وصف المعاملة")
+    engineering_discipline = models.CharField(
+        max_length=10,
+        choices=DisciplineChoices.choices,
+        default=DisciplineChoices.ARCH,
+        verbose_name="التخصص الهندسي"
+    )
+    location = models.CharField(max_length=255, blank=True, null=True, verbose_name="الموقع الجغرافي")
+    expected_start_date = models.DateField(null=True, blank=True, verbose_name="تاريخ البدء المتوقع")
+    expected_duration = models.PositiveIntegerField(null=True, blank=True, help_text="المدة بالأيام", verbose_name="المدة الزمنية المتوقعة")
+
     main_category = models.ForeignKey('TransactionMainCategory', on_delete=models.SET_NULL, null=True, blank=True)
     sub_category = models.ForeignKey('TransactionSubCategory', on_delete=models.SET_NULL, null=True, blank=True)
-
-    # --- حقول الجهة المختصة (جديدة) ---
     competent_authority = models.ForeignKey('CompetentAuthority', on_delete=models.SET_NULL, null=True, blank=True)
 
-    # --- حقول وثيقة الملكية (جديدة) ---
-    doc_type = models.CharField(max_length=100, blank=True)
-    doc_classification = models.CharField(max_length=100, blank=True)
-    doc_number = models.CharField(max_length=50, blank=True)
+    # === START: التصحيح هنا - إضافة null=True للحقول النصية ===
+    doc_type = models.CharField(max_length=100, blank=True, null=True)
+    doc_classification = models.CharField(max_length=100, blank=True, null=True)
+    doc_number = models.CharField(max_length=50, blank=True, null=True)
     doc_date = models.DateField(null=True, blank=True)
     area_sq_meters = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
-    # --- حقول بيانات الأرض (جديدة) ---
-    piece_number = models.CharField(max_length=50, blank=True)
-    plan_number = models.CharField(max_length=50, blank=True)
-    neighborhood = models.CharField(max_length=100, blank=True)
-    city = models.CharField(max_length=100, blank=True)
+    piece_number = models.CharField(max_length=50, blank=True, null=True)
+    plan_number = models.CharField(max_length=50, blank=True, null=True)
+    neighborhood = models.CharField(max_length=100, blank=True, null=True)
+    city = models.CharField(max_length=100, blank=True, null=True)
+    # === END: التصحيح ===
 
     def __str__(self):
-        return f"{self.short_code} - {self.client.name_ar}"
+        display_name = self.short_code if self.short_code else self.title
+        return f"{display_name}"
 
     def save(self, *args, **kwargs):
-        # التأكد من أننا نقوم بإنشاء الكود الطويل فقط عند إنشاء سجل جديد
-        if not self.pk: # self.pk is None if the object is new
-            # نستخدم timezone.now() للحصول على التاريخ الحالي بدلاً من الاعتماد على created_at
-            date_part = timezone.now().strftime('%y-%m-%d')
-            client_id_part = str(self.client.id)
-            type_part = self.main_category.code if self.main_category else 'TRANS'
-
-            self.long_code = f"{date_part}-{client_id_part}-{type_part}-{self.short_code}"
-
-        # استدعاء دالة الحفظ الأصلية
+        if not self.pk:
+            now = timezone.now()
+            year = now.year
+            month = now.month
+            last_transaction = Transaction.objects.filter(
+                created_at__year=year,
+                created_at__month=month
+            ).order_by('-short_code').first()
+            sequence = 1
+            if last_transaction and last_transaction.short_code:
+                try:
+                    last_sequence_str = last_transaction.short_code.split('-')[-1]
+                    sequence = int(last_sequence_str) + 1
+                except (IndexError, ValueError):
+                    pass
+            self.short_code = (
+                f"PROJ-{self.engineering_discipline}"
+                f"-{year}-{str(month).zfill(2)}"
+                f"-{str(sequence).zfill(4)}"
+            )
         super().save(*args, **kwargs)
+
 
 def transaction_directory_path(instance, filename):
     transaction_id = instance.transaction.id
