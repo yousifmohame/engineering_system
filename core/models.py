@@ -70,21 +70,88 @@ class CustomUser(AbstractUser):
 # تم وضع نموذج العميل قبل نموذج المعاملة لحل الخطأ
 # ===============================================
 class Client(models.Model):
-    class ClientType(models.TextChoices):
-        ENG_OFFICE = 'ENG_OFFICE', 'مكتب هندسي'
-        CLIENT = 'CLIENT', 'عميل'
+    # === START: إضافة أنواع العملاء الجديدة من ملف PDF ===
+    class ClientTypeChoices(models.TextChoices):
+        PERSON = 'P', 'شخص طبيعي'
+        COMPANY = 'C', 'شركة خاصة'
+        GOVERNMENT = 'G', 'جهة حكومية'
+        ENGINEERING_OFFICE = 'E', 'مكتب هندسي'
+        CONTRACTOR = 'R', 'مقاول'
+        DEVELOPER = 'D', 'مطور عقاري'
+        INTERNATIONAL_ORG = 'I', 'منظمة دولية' # تم استخدام I بدلاً من 1 لتجنب الخلط
+        CHARITY = 'N', 'جمعية خيرية'
+    
+    class CompanySpecializationChoices(models.TextChoices):
+        CONSTRUCTION = 'CC', 'شركة إنشاءات'
+        CONSULTING = 'CS', 'شركة استشارات'
+        INDUSTRIAL = 'CI', 'شركة صناعية'
+        COMMERCIAL = 'CT', 'شركة تجارية'
+        TECH = 'CX', 'شركة تقنية'
 
-    client_type = models.CharField(max_length=20, choices=ClientType.choices, default=ClientType.CLIENT)
-    client_code = models.CharField(max_length=20, unique=True, help_text="مثل: EO-000001 أو CL-000001")
-    name_ar = models.CharField(max_length=255)
+    class GovernmentSpecializationChoices(models.TextChoices):
+        MINISTRY = 'GM', 'وزارة'
+        MUNICIPALITY = 'GC', 'بلدية'
+        AUTHORITY = 'GA', 'هيئة حكومية'
+        PUBLIC_INSTITUTION = 'GP', 'مؤسسة عامة'
+    # === END: إضافة الأنواع الجديدة ===
+
+    # --- تعديل الحقول الحالية وإضافة الجديدة ---
+    client_type = models.CharField(
+        max_length=20, 
+        choices=ClientTypeChoices.choices, 
+        default=ClientTypeChoices.PERSON,
+        verbose_name="نوع العميل"
+    )
+    # حقل جديد لتخزين التخصص الفرعي
+    sub_specialization = models.CharField(
+        max_length=20, 
+        blank=True, 
+        null=True,
+        verbose_name="التخصص الفرعي"
+    )
+
+    client_code = models.CharField(
+        max_length=30, 
+        unique=True, 
+        editable=False,
+        help_text="يتم إنشاؤه تلقائيًا. مثال: CL-P-2025-00001"
+    )
+    name_ar = models.CharField(max_length=255, verbose_name="اسم العميل بالعربية")
     phone_number = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True, null=True)
     commercial_register = models.CharField(max_length=100, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.client_code} - {self.name_ar}"
+        return f"{self.client_code} - {self.name_ar}" if self.client_code else self.name_ar
 
+    # === START: دالة الحفظ الجديدة لتوليد الكود تلقائيًا ===
+    def save(self, *args, **kwargs):
+        # يتم إنشاء الكود فقط عند إنشاء سجل جديد
+        if not self.pk:
+            year = timezone.now().year
+            
+            # تحديد الرمز الفرعي (إذا وجد)
+            type_code = self.sub_specialization if self.sub_specialization else self.client_type
+
+            # البحث عن آخر عميل من نفس النوع والسنة للحصول على الرقم التسلسلي
+            last_client = Client.objects.filter(
+                client_code__startswith=f'CL-{type_code}-{year}'
+            ).order_by('client_code').last()
+            
+            sequence = 1
+            if last_client:
+                try:
+                    last_sequence_str = last_client.client_code.split('-')[-1]
+                    sequence = int(last_sequence_str) + 1
+                except (ValueError, IndexError):
+                    pass # في حال وجود خطأ، يبقى التسلسل 1
+
+            # بناء الكود بالشكل الجديد: CL-P-2025-00001 أو CL-CC-2025-00001
+            self.client_code = f"CL-{type_code}-{year}-{str(sequence).zfill(5)}"
+            
+        super().save(*args, **kwargs)
+    # === END: دالة الحفظ الجديدة ===
 # ===============================================
 # النماذج الجديدة التي اقترحتها للتطوير
 # ===============================================

@@ -200,8 +200,21 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
 class ClientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Client
-        fields = ['id', 'client_code', 'name_ar', 'client_type', 'phone_number', 'email', 'created_at']
-
+        fields = [
+            'id', 
+            'client_code', 
+            'name_ar', 
+            'client_type', 
+            'sub_specialization', # إضافة الحقل الجديد
+            'phone_number', 
+            'email', 
+            'commercial_register', 
+            'created_at'
+        ]
+        read_only_fields = ('client_code', 'created_at') # الكود للقراءة فقط
+        extra_kwargs = {
+            'sub_specialization': {'required': False, 'allow_null': True, 'allow_blank': True}
+        }
 
     
 class TaskSerializer(serializers.ModelSerializer):
